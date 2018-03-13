@@ -1,0 +1,124 @@
+
+---
+title: "Animal Sleeping Hours"
+author: "Eliza Norden"
+date: "9 mars 2018"
+output: pdf_document
+---
+## Have a look at the data
+```{r}
+library(ggplot2)
+library(tidyr)
+
+sleep_data = read.csv("sleep1.csv")
+
+rownames(sleep_data) = sleep_data[,1]
+sleep_data = sleep_data[,-1]
+sleep_data = sleep_data[,3:10]
+sleep_data = na.omit(sleep_data)
+
+
+# scatter plot of sleep_data vs other variables
+sleep_data %>%
+  gather(-sleep, key = "var", value = "value") %>% 
+  ggplot(aes(x = value, y = sleep)) +
+  geom_point() +
+  facet_wrap(~ var, scales = "free") 
+  
+
+```
+  
+
+## Remove highly correlated variables
+``` {r}
+corr = cor(sleep_data)
+corr[!lower.tri(corr)] = 0 
+corr_lim = 0.90
+# remove variables that are highly correlated
+#sleep_data = sleep_data[,apply(corr,2,function(x) all(abs(x)<corr_lim))]
+sleep_data = sleep_data[,c(1:2,4:5,7:8)] #manual removal
+```
+
+
+## Stepwise regression using forward selection
+``` {r}
+library(MASS)
+
+fit = lm(sleep ~  ., data=sleep_data)
+step= stepAIC(fit_all, direction = "both")
+
+f.vars = names(step$coefficients)[-1]
+#listfactors = c("danger", "predation", "sleepExposure")
+#fact.true = listfactors[(listfactors %in% f.vars)]
+#fact.false = f.vars[f.vars!=fact.true]
+#form = as.formula(paste("sleep ~ factor(",fact.true,") +", fact.false[1], "+", fact.false[2]))
+form = formula(step)
+
+#fit = lm(form, data=sleep_data)
+summary(fit)
+par(mfrow = c(2,2))
+plot(fit)
+
+
+```
+
+## Find model by cross-validation
+``` {r}
+
+mod = glm(formula(step), data=sleep_data)
+cv.error = cv.glm(mod, data=sleep_data)$delta
+  
+
+```
+
+
+## get prediction intervals by bootstrapping
+``` {r}
+
+#step= boot.stepAIC(lm(sleep ~ ., data = sleep_data), data=sleep_data, B=100, alpha = 0.05, direction = "backward")
+# best fit according to bootstrap of AIC 
+#fit = lm(formula(step), data = sleep_data, subset=train)
+
+
+names = rownames(sleep_data)
+
+dim = dim(sleep_data)[1]
+sub = sample(dim, dim, replace=FALSE)
+train = sub[1:(dim/2)]
+test = sub[(dim/2+1):dim]
+#test = sub
+
+test.df = data.frame(row.names = names[test], sleep_data[,f.vars][test,])
+
+
+library(car)
+#bootfit = bootCase(fit, function(x) predict(x,test.df,interval="predict"), B=1000)
+#std = apply(bootfit, 2, sd)[test]
+#bootfit = attr(bootfit,"pointEstimate")
+
+bootstat = function(formula, data, indices) {
+  fit = lm(formula, data[indices,])
+  return(predict(fit, test.df))
+}
+
+library(boot)
+bootfit = boot(data=sleep_data, statistic = bootstat, R=10000, formula=form)
+
+boot.test = summary(bootfit)
+boot.df = data.frame(fit=boot.test$original,std=boot.test$bootSE )
+rownames(boot.df) = names[test]
+
+#pred.sleep = predict(fit, subset = test, se=TRUE)
+#pred.df = data.frame(means = pred.sleep$fit, sds = pred.sleep$se.fit)
+sleep.df = data.frame(sleep = sleep_data$sleep)
+
+library(ggplot2)
+
+p = ggplot(data=boot.df,aes(x=names[test], y=boot.df$fit)) +
+  geom_point(shape=3) +
+  geom_errorbar(data=boot.df,aes(ymax = boot.df$fit + boot.df$std, ymin = boot.df$fit - boot.df$std)) +
+  theme(axis.text.x = element_text(angle=45)) +
+  labs(x = "Animal" ,y = "Daily sleep (hrs)", title="Hours of daily sleep predicted by bootstrap") 
+
+p + geom_point(aes(x=names[test], y=sleep.df[test,]), color="red", shape=2)
+```
