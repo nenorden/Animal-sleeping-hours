@@ -1,0 +1,219 @@
+
+---
+title: "Animal Sleeping Hours"
+author: "Eliza Norden"
+date: "9 mars 2018"
+output: pdf_document
+---
+##Inital working with the data
+```{r}
+library(ggplot2)
+library(tidyr)
+library(MASS)
+library(boot)
+
+#load the data and initilize row names.
+sleep_data = read.csv(curl("https://raw.githubusercontent.com/yuany-pku/data/master/sleep1.csv"))
+
+rownames(sleep_data) = sleep_data[,1]
+sleep_data = sleep_data[,-1]
+View(sleep_data)
+
+#Analyze missing values: 
+
+missing_values<- sleep_data[rowSums(is.na(sleep_data)) > 0,]
+View(missing_values)
+
+#in 20 instances data is missing and features are not filled in 
+#we check where these values are missing:
+number_of_features= length(missing_values[1,])
+N_mis_values_per_feature <- vector("numeric",5)
+for (i in 1:number_of_features) {
+  N_mis_values_per_feature[i]= sum(is.na(missing_values[,i]))
+  
+}
+View(N_mis_values_per_feature)
+
+# We note that most of the missing values are missing in the dream sleep(14) and slow wave sleep (12) variables. Apart from that there is 4 NA's in sleep, danger and life. Now techniques will be examined to deal impute these missing values. For this we will first examine the dataset a bit closer.
+summary(sleep_data)
+cor(sleep_data, use = "na.or.complete")
+
+# We notice high correlations between slow-wave sleep, dream sleep and sleep (Naturally as sleep is the sum of the other two). Furthermore body and brain weight seem to be highly correlated (0.96) as well as predation and danger (0.92). The maximum life span exhibits correlations > 0.5 with brain weight and gestation time. # We will now try to impute missing values and start with the sleep values:
+
+sleep_missing <- missing_values[is.na(missing_values$sleep),]
+View(sleep_missing)
+
+# We see that all instances that have sleep == NA lack either slowWaveSleep or DreamSleep. This makes sense, because it is the sum of the other two. Hence we will first try to impute the other two. For this, we first create two new columns:
+
+sleep_data$frac_slowWave_dream <-as.numeric( sleep_data$slowWaveSleep/sleep_data$dreamSleep)
+summary(sleep_data$frac_slowWave_dream)
+
+
+#ggplot(data=sleep_data, aes(sleep_data$body)) + geom_histogram(binwidth = 100) 
+#sleep_data$weight = cut(sleep_data$body,c(min(sleep_data$body),1,10,150,max(sleep_data$body)), labels = #c("Light","Normal","heavy","huge"))
+#sleep_data$weight <- factor(sleep_data$weight)
+#table(sleep_data$weight)
+#View(sleep_data)
+
+
+# We note that one of the frac values is infinte. We replace it with NA and use the summary function again. 
+
+Inf_instances <-which(sleep_data$frac_slowWave_dream == Inf)
+Inf_instances
+sleep_data$frac_slowWave_dream[Inf_instances] <-NA
+summary(as.numeric(sleep_data$frac_slowWave_dream)) 
+
+
+
+# We note that the mean is 5.469 and the median is 4.613. Now we will check if we can find correlations between the variables:
+cor(sleep_data,use="na.or.complete")
+
+#We note, that only dream sleep has a noteable correlation with frac_slowWave_dream. We use the expected value (5.496) to predict the dream and slow sleep from the sleep value for instances for which this is possible. 
+
+instances_with_both_missing = sleep_data[is.na(sleep_data$slowWaveSleep) & is.na(sleep_data$dreamSleep) & !is.na(sleep_data$sleep),]
+View(instances_with_both_missing)
+instances_with_both_missing$dreamSleep= instances_with_both_missing$sleep/(1+5.469)
+instances_with_both_missing$slowWaveSleep<- instances_with_both_missing$sleep - instances_with_both_missing$dreamSleep
+sleep_data[is.na(sleep_data$slowWaveSleep) & is.na(sleep_data$dreamSleep) & !is.na(sleep_data$sleep),] = instances_with_both_missing
+
+View(sleep_data)
+
+
+
+sleep_data = sleep_data[,c(3:10)] # omit slowWaveSleep and dreamSleep
+
+# scatter plot of sleep_data vs other variables
+sleep_data %>%
+  gather(-sleep, key = "var", value = "value") %>% 
+  ggplot(aes(x = value, y = sleep)) +
+  geom_point() +
+  facet_wrap(~ var, scales = "free") 
+  
+
+```
+  
+
+## Remove highly correlated variables
+``` {r}
+corr = cor(sleep_data)
+corr[!lower.tri(corr)] = 0 
+corr_lim = 0.90
+# remove variables that are highly correlated
+sleep_data = sleep_data[,apply(corr,2,function(x) all(abs(x)<corr_lim))]
+#sleep_data = sleep_data[,c(1:2,4:5,7:8)] #manual removal (to remove predation instead of danger)
+```
+
+
+## Find linear model by LOOCV
+``` {r}
+
+dep_var <- 'sleep'
+indep_vars <- setdiff(names(sleep_data), dep_var)
+
+# Model fits for all combinations of predictors. Copied from stackExchange. 
+glms <- Reduce(append, lapply(seq_along(indep_vars),
+  function(num_vars) {
+    Reduce(append, apply(combn(length(indep_vars), num_vars), 2, function(vars) {
+      formula_string <- paste(c(dep_var, paste(indep_vars[vars], collapse = "+")), collapse = '~')
+      structure(list(glm(as.formula(formula_string), data = sleep_data)), .Names = formula_string)
+    }))
+  }
+))
+
+dim = dim(sleep_data)[1]
+sub = sample(dim,dim)
+train = sub[1:round(dim/2)]
+test = sub[round(dim/2+1):dim]
+
+formulas.comb = names(glms) # formula strings
+N = length(formulas.comb)
+
+cv.error = c()
+# loop over all predictor combinations, calculate MSE by LOOCV
+for(i in 1:N) {
+  cv.error[i] = cv.glm(glm(as.formula(formulas.comb[i]), data=sleep_data[train,]), data=sleep_data[train,])$delta[1]
+}
+# data frame holding formulas and MSE, in ascending order
+cv.df = data.frame(formula = formulas.comb, MSE= cv.error)
+cv.df = cv.df[order(cv.error),]
+# technical step converting formula to a factor so that ggplot gets that it should plot in order
+cv.df$formula = factor(cv.df$formula, levels = cv.df$formula[order(cv.df$MSE)])
+rownames(cv.df) = cv.df$formula
+
+# plot MSE 
+ggplot(data=cv.df, aes(x=factor(cv.df$formula), y=cv.df$MSE)) + geom_point() + theme(axis.text.x = element_text(angle=90)) + 
+  xlab("Formula") + ylab("MSE") + ggtitle("MSE for different formulas, calculated with LOOCV")   #theme(axis.text.x=element_blank())
+
+form= as.formula(as.character(cv.df$formula[1]))
+fit = glm(form, data=sleep_data, subset=train)
+summary(fit)
+```
+
+
+
+## get prediction intervals by bootstrapping
+``` {r}
+library(boot)
+# species names
+names = rownames(sleep_data)
+# predictors in formula
+vars = all.vars(form[[3]])
+# data frame holding test subset of sleep_data
+test.df = data.frame(row.names = names[test], sleep_data[,vars][test,])
+
+# boot statistic to predict sleep
+bootstat = function(formula, data, indices) {
+  fit = lm(formula, data[indices,])
+  return(predict(fit, test.df))
+}
+
+# bootstrap using formula found by LOOCV
+boot = boot(data=sleep_data, statistic = bootstat, R=10000, formula=form)
+# predicted sleep and standard deviation
+boot.df = data.frame(fit=boot$t0,std=apply(boot$t,2,sd) )
+rownames(boot.df) = names[test]
+
+sleep.df = data.frame(sleep = sleep_data$sleep)
+
+# MSE when comparing predictions to known data
+mse(sleep.df[test,], boot.df$fit)
+
+# plot predictions, error boxes (+- one standard dev)
+p = ggplot(data=boot.df,aes(x=names[test], y=boot.df$fit)) +
+  geom_point(shape=3) +
+  geom_errorbar(data=boot.df,aes(ymax = boot.df$fit + boot.df$std, ymin = boot.df$fit - boot.df$std)) +
+  theme(axis.text.x = element_text(angle=45)) +
+  labs(x = "Animal" ,y = "Daily sleep (hrs)", title="Hours of daily sleep predicted by bootstrap") 
+
+# plot actual sleep hours as comparison
+p + geom_point(aes(x=names[test], y=sleep.df[test,]), color="red", shape=2)
+
+
+```
+## Ignore this block for now - basically does same as above but bootstraps model coefficients instead of making predictions
+``` {r}
+
+bootstatcoef = function(formula, data, indices) {
+  fit = lm(formula, data[indices,])
+  return(coef(fit))
+}
+
+bootcoef = boot(data=sleep_data, statistic = bootstatcoef, R=10000, formula=form)
+
+meancoef = apply(bootcoef$t, 2, mean)
+meanstd = apply(bootcoef$t, 2, sd)
+
+sleep_pred = data.frame(pred=meancoef[1] + meancoef[2]*sleep_data$gestation + meancoef[3]*sleep_data$danger, lwr = (meancoef[1]-meanstd[1]) + (meancoef[2]-meanstd[2])*sleep_data$gestation + (meancoef[3]-meanstd[3])*sleep_data$danger, upr  = (meancoef[1]+meanstd[1]) + (meancoef[2]+meanstd[2])*sleep_data$gestation + (meancoef[3]+meanstd[3])*sleep_data$danger )
+rownames(sleep_pred) = names
+
+
+p=ggplot(data=sleep_pred[test,],aes(x=names[test], y=sleep_pred$pred[test])) +
+  geom_point(shape=3) +
+  geom_errorbar(data=sleep_pred[test,],aes(ymax = sleep_pred$upr[test], ymin = sleep_pred$lwr[test])) +
+  theme(axis.text.x = element_text(angle=45)) +
+  labs(x = "Animal" ,y = "Daily sleep (hrs)", title="Hours of daily sleep predicted by bootstrap") 
+
+p+geom_point(aes(x=names[test], y=sleep_data$sleep[test]), color="red", shape=2)
+library(hydroGOF)
+print(mse(sleep_pred$pred, sleep_data$sleep))
+```
