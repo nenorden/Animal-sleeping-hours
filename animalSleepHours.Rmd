@@ -1,9 +1,11 @@
 
 ---
 title: "Animal Sleeping Hours"
-author: "Eliza Norden"
-date: "9 mars 2018"
-output: pdf_document
+author: "Sarah Catherine James, Alexander Moellers, Eliza Norden"
+date: "15 mars 2018"
+output: 
+  html_document:
+    keep_md: true
 ---
 ##Inital working with the data
 ```{r}
@@ -171,8 +173,8 @@ N = length(models)
 
 cv.error = c()
 # loop over all predictor combinations, calculate MSE by LOOCV
-for(i in 1:N) {
-  cv.error[i] = cv.glm(glm(as.formula(models[i]), data=sleep_data), data=sleep_data])$delta[1]
+for(i in 1:N){ 
+  cv.error[i] = cv.glm(glm(as.formula(models[i]), data=sleep_data), data=sleep_data)$delta[1]
 }
 # data frame holding formulas and MSE, in ascending order
 cv.df = data.frame(formula = models, MSE= cv.error)
@@ -195,10 +197,10 @@ bootci = function(formula, data, indices) {
 MSE.df = NULL
 for (i in 1:5) {
   f = as.formula(as.character(cv.df$formula[i]))
-  fit = glm(f, data=sleep_data, subset=train)
+  fit = glm(f, data=sleep_data)
   
   # bootstrap MSE 
-  boot = boot(data=sleep_data, statistic = bootci, R=100000, formula=f)
+  boot = boot(data=sleep_data, statistic = bootci, R=10000, formula=f)
   # confidence interval
   boot.ci = apply(boot$t, 2, function(x) quantile(x, c(0.05, 0.95)))
   MSE.df = rbind(MSE.df, data.frame(t(boot.ci)))
